@@ -1,9 +1,9 @@
-from ..PyQt.QtGui import QDoubleSpinBox, QApplication
-from ..PyQt.QtCore import pyqtProperty, QEvent, Qt
-from .base import PyDMWritableWidget
+from qtpy.QtWidgets import QDoubleSpinBox, QApplication
+from qtpy.QtCore import Property, QEvent, Qt
+from .base import PyDMWritableWidget, TextFormatter
 
 
-class PyDMSpinbox(QDoubleSpinBox, PyDMWritableWidget):
+class PyDMSpinbox(QDoubleSpinBox, TextFormatter, PyDMWritableWidget):
     """
     A QDoubleSpinBox with support for Channels and more from PyDM.
 
@@ -19,6 +19,7 @@ class PyDMSpinbox(QDoubleSpinBox, PyDMWritableWidget):
         PyDMWritableWidget.__init__(self, init_channel=init_channel)
         self.valueBeingSet = False
         self.setEnabled(False)
+        self._alarm_sensitive_border = False
         self._show_step_exponent = True
         self.step_exponent = 0
         self.setDecimals(0)
@@ -51,16 +52,23 @@ class PyDMSpinbox(QDoubleSpinBox, PyDMWritableWidget):
         else:
             super(PyDMSpinbox, self).keyPressEvent(ev)
 
-    def contextMenuEvent(self, ev):
-        """Increment LineEdit menu to toggle the display of the step size."""
-        def toogle():
+    def widget_ctx_menu(self):
+        """
+        Fetch the Widget specific context menu which will be populated with additional tools by `assemble_tools_menu`.
+
+        Returns
+        -------
+        QMenu or None
+            If the return of this method is None a new QMenu will be created by `assemble_tools_menu`.
+        """
+        def toggle():
             self.showStepExponent = not self.showStepExponent
 
         menu = self.lineEdit().createStandardContextMenu()
         menu.addSeparator()
         ac = menu.addAction('Toggle Show Step Size')
-        ac.triggered.connect(toogle)
-        menu.exec_(ev.globalPos())
+        ac.triggered.connect(toggle)
+        return menu
 
     def update_step_size(self):
         """
@@ -76,9 +84,7 @@ class PyDMSpinbox(QDoubleSpinBox, PyDMWritableWidget):
 
         Returns
         -------
-        format_string : str
-            The format string to be used including or not the precision
-            and unit
+        None
         """
         if self._show_units:
             units = " {}".format(self._unit)
@@ -86,13 +92,11 @@ class PyDMSpinbox(QDoubleSpinBox, PyDMWritableWidget):
             units = ""
 
         if self._show_step_exponent:
-            self.setSuffix("{units} Step: 1E{exp}".format(
-                units=units, exp=self.step_exponent))
+            self.setSuffix("{0} Step: 1E{1}".format(units, self.step_exponent))
             self.lineEdit().setToolTip("")
         else:
             self.setSuffix(units)
-            self.lineEdit().setToolTip(
-                            'Step: 1E{0:+d}'.format(self.step_exponent))
+            self.lineEdit().setToolTip('Step: 1E{0:+d}'.format(self.step_exponent))
 
     def value_changed(self, new_val):
         """
@@ -149,7 +153,7 @@ class PyDMSpinbox(QDoubleSpinBox, PyDMWritableWidget):
         super(PyDMSpinbox, self).precision_changed(new_precision)
         self.setDecimals(new_precision)
 
-    @pyqtProperty(bool)
+    @Property(bool)
     def showStepExponent(self):
         """
         Whether to show or not the step exponent

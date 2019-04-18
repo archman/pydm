@@ -1,6 +1,6 @@
-from ..PyQt.QtGui import QFrame
-from ..PyQt.QtCore import pyqtProperty
-from .base import PyDMWidget, compose_stylesheet
+from qtpy.QtWidgets import QFrame
+from qtpy.QtCore import Property
+from .base import PyDMWidget
 
 
 class PyDMFrame(QFrame, PyDMWidget):
@@ -22,7 +22,7 @@ class PyDMFrame(QFrame, PyDMWidget):
         self._disable_on_disconnect = False
         self.alarmSensitiveBorder = False
 
-    @pyqtProperty(bool)
+    @Property(bool)
     def disableOnDisconnect(self):
         """
         Whether or not the PyDMFrame should be disabled in case the
@@ -49,38 +49,6 @@ class PyDMFrame(QFrame, PyDMWidget):
         if self._disable_on_disconnect != bool(new_val):
             self._disable_on_disconnect = new_val
             self.check_enable_state()
-
-    def alarm_severity_changed(self, new_alarm_severity):
-        """
-        Callback invoked when the Channel alarm severity is changed.
-        This callback is not processed if the widget has no channel
-        associated with it.
-        This callback handles the composition of the stylesheet to be
-        applied and the call
-        to update to redraw the widget with the needed changes for the
-        new state.
-
-        Parameters
-        ----------
-        new_alarm_severity : int
-            The new severity where 0 = NO_ALARM, 1 = MINOR, 2 = MAJOR
-            and 3 = INVALID
-        """
-        if self._channel is None:
-            return
-        # Cleanup the old alarm stylesheet used
-        alarm_style = compose_stylesheet(style=self._style, obj=self)
-        original_style = str(self.styleSheet()).replace(alarm_style, "")
-
-        self._alarm_state = new_alarm_severity
-        self._style = dict(self.alarm_style_sheet_map[self._alarm_flags][new_alarm_severity])
-        if "color" in self._style:
-            if self._alarm_state != 0:
-                self._style["background-color"] = self._style["color"]
-            del self._style["color"]
-        style = compose_stylesheet(style=self._style, obj=self)
-        self.setStyleSheet(original_style + style)
-        self.update()
 
     def check_enable_state(self):
         """

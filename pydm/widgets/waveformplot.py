@@ -1,5 +1,5 @@
-from ..PyQt.QtGui import QColor
-from ..PyQt.QtCore import pyqtSlot, pyqtProperty
+from qtpy.QtGui import QColor
+from qtpy.QtCore import Slot, Property
 import numpy as np
 from .baseplot import BasePlot, NoDataError, BasePlotCurveItem
 from .channel import PyDMChannel
@@ -47,6 +47,7 @@ class WaveformCurveItem(BasePlotCurveItem):
     **kargs: optional
         PlotDataItem keyword arguments, such as symbol and symbolSize.
     """
+    _channels = ('x_channel', 'y_channel')
 
     def __init__(self, y_addr=None, x_addr=None, redraw_mode=None, **kws):
         y_addr = "" if y_addr is None else y_addr
@@ -174,20 +175,22 @@ class WaveformCurveItem(BasePlotCurveItem):
                 self.x_waveform = self.latest_x
                 self.y_waveform = self.latest_y
 
-    @pyqtSlot(bool)
+    @Slot(bool)
     def xConnectionStateChanged(self, connected):
         pass
 
-    @pyqtSlot(bool)
+    @Slot(bool)
     def yConnectionStateChanged(self, connected):
         pass
 
-    @pyqtSlot(np.ndarray)
+    @Slot(np.ndarray)
     def receiveXWaveform(self, new_waveform):
         """
         Handler for new x waveform data.
         """
         if new_waveform is None:
+            return
+        if np.isinf(new_waveform).all():
             return
         self.latest_x = new_waveform
         self.needs_new_x = False
@@ -195,17 +198,20 @@ class WaveformCurveItem(BasePlotCurveItem):
         if self.latest_y is not None:
             self.update_waveforms_if_ready()
 
-    @pyqtSlot(np.ndarray)
+    @Slot(np.ndarray)
     def receiveYWaveform(self, new_waveform):
         """
         Handler for new y waveform data.
         """
         if new_waveform is None:
             return
+        if np.isinf(new_waveform).all():
+            return
         self.latest_y = new_waveform
         self.needs_new_y = False
-        if self.x_channel is None or self.x_waveform is not None:
+        if self.x_channel is None or self.latest_x is not None:
             self.update_waveforms_if_ready()
+            self.data_changed.emit()
 
     def redrawCurve(self):
         """
@@ -218,13 +224,14 @@ class WaveformCurveItem(BasePlotCurveItem):
         if self.y_waveform is None:
             return
         if self.x_waveform is None:
-            self.setData(y=self.y_waveform)
+            self.setData(y=self.y_waveform.astype(np.float))
             return
         if self.x_waveform.shape[0] > self.y_waveform.shape[0]:
             self.x_waveform = self.x_waveform[:self.y_waveform.shape[0]]
         elif self.x_waveform.shape[0] < self.y_waveform.shape[0]:
             self.y_waveform = self.y_waveform[:self.x_waveform.shape[0]]
-        self.setData(x=self.x_waveform, y=self.y_waveform)
+        self.setData(x=self.x_waveform.astype(np.float),
+                     y=self.y_waveform.astype(np.float))
         self.needs_new_x = True
         self.needs_new_y = True
 
@@ -237,7 +244,7 @@ class WaveformCurveItem(BasePlotCurveItem):
         -------
         tuple
         """
-        if self.y_waveform is None:
+        if self.y_waveform is None or self.y_waveform.shape[0] == 0:
             raise NoDataError("Curve has no Y data, cannot determine limits.")
         if self.x_waveform is None:
             yspan = (float(np.amax(self.y_waveform)) -
@@ -246,8 +253,11 @@ class WaveformCurveItem(BasePlotCurveItem):
                     (float(np.amin(self.y_waveform) - yspan),
                      float(np.amax(self.y_waveform) + yspan)))
         else:
-            return ((np.amin(self.x_waveform), np.amax(self.x_waveform)),
-                    (np.amin(self.y_waveform), np.amax(self.y_waveform)))
+            return ((float(np.amin(self.x_waveform)), float(np.amax(self.x_waveform))),
+                    (float(np.amin(self.y_waveform)), float(np.amax(self.y_waveform))))
+
+    def channels(self):
+        return [self.y_channel, self.x_channel]
 
 
 class PyDMWaveformPlot(BasePlot):
@@ -357,6 +367,7 @@ class PyDMWaveformPlot(BasePlot):
             plot_opts['lineWidth'] = lineWidth
         if redraw_mode is not None:
             plot_opts['redraw_mode'] = redraw_mode
+        self._needs_redraw = False
         curve = WaveformCurveItem(y_addr=y_channel,
                                   x_addr=x_channel,
                                   name=name,
@@ -364,6 +375,7 @@ class PyDMWaveformPlot(BasePlot):
                                   **plot_opts)
         self.channel_pairs[(y_channel, x_channel)] = curve
         self.addCurve(curve, curve_color=color)
+        curve.data_changed.connect(self.set_needs_redraw)
 
     def removeChannel(self, curve):
         """
@@ -389,41 +401,21 @@ class PyDMWaveformPlot(BasePlot):
         curve = self._curves[index]
         self.removeChannel(curve)
 
-    def updateAxes(self):
-        """
-        Update the X and Y axes for the plot to fit all data in
-        all curves for the plot.
-        """
-        plot_xmin = None
-        plot_xmax = None
-        plot_ymin = None
-        plot_ymax = None
-        for curve in self._curves:
-            try:
-                ((curve_xmin, curve_xmax),
-                 (curve_ymin, curve_ymax)) = curve.limits()
-            except NoDataError:
-                continue
-            if plot_xmin is None or curve_xmin < plot_xmin:
-                plot_xmin = curve_xmin
-            if plot_xmax is None or curve_xmax > plot_xmax:
-                plot_xmax = curve_xmax
-            if plot_ymin is None or curve_ymin < plot_ymin:
-                plot_ymin = curve_ymin
-            if plot_ymax is None or curve_ymax > plot_ymax:
-                plot_ymax = curve_ymax
-        self.plotItem.setLimits(xMin=plot_xmin, xMax=plot_xmax,
-                                yMin=plot_ymin, yMax=plot_ymax)
+    @Slot()
+    def set_needs_redraw(self):
+        self._needs_redraw = True
 
-    @pyqtSlot()
+    @Slot()
     def redrawPlot(self):
         """
         Request a redraw from each curve in the plot.
         Called by curves when they get new data.
         """
-        self.updateAxes()
+        if not self._needs_redraw:
+            return
         for curve in self._curves:
             curve.redrawCurve()
+        self._needs_redraw = False
 
     def clearCurves(self):
         """
@@ -467,7 +459,7 @@ class PyDMWaveformPlot(BasePlot):
                             symbolSize=d.get('symbolSize'),
                             redraw_mode=d.get('redraw_mode'))
 
-    curves = pyqtProperty("QStringList", getCurves, setCurves)
+    curves = Property("QStringList", getCurves, setCurves)
 
     def channels(self):
         """
@@ -487,30 +479,30 @@ class PyDMWaveformPlot(BasePlot):
     # and maxYRange are all defined in BasePlot, but we don't expose them as
     # properties there, because not all plot subclasses necessarily want them
     # to be user-configurable in Designer.
-    autoRangeX = pyqtProperty(bool, BasePlot.getAutoRangeX,
-                              BasePlot.setAutoRangeX, BasePlot.resetAutoRangeX,
-                              doc="""
-    Whether or not the X-axis automatically rescales to fit the data.
-    If true, the values in minXRange and maxXRange are ignored.""")
+    autoRangeX = Property(bool, BasePlot.getAutoRangeX,
+                          BasePlot.setAutoRangeX, BasePlot.resetAutoRangeX,
+                          doc="""
+Whether or not the X-axis automatically rescales to fit the data.
+If true, the values in minXRange and maxXRange are ignored.""")
 
-    minXRange = pyqtProperty(float, BasePlot.getMinXRange,
-                             BasePlot.setMinXRange, doc="""
-    Minimum X-axis value visible on the plot.""")
+    minXRange = Property(float, BasePlot.getMinXRange,
+                         BasePlot.setMinXRange, doc="""
+Minimum X-axis value visible on the plot.""")
 
-    maxXRange = pyqtProperty(float, BasePlot.getMaxXRange,
-                             BasePlot.setMaxXRange, doc="""
-    Maximum X-axis value visible on the plot.""")
+    maxXRange = Property(float, BasePlot.getMaxXRange,
+                         BasePlot.setMaxXRange, doc="""
+Maximum X-axis value visible on the plot.""")
 
-    autoRangeY = pyqtProperty(bool, BasePlot.getAutoRangeY,
-                              BasePlot.setAutoRangeY, BasePlot.resetAutoRangeY,
-                              doc="""
-    Whether or not the Y-axis automatically rescales to fit the data.
-    If true, the values in minYRange and maxYRange are ignored.""")
+    autoRangeY = Property(bool, BasePlot.getAutoRangeY,
+                          BasePlot.setAutoRangeY, BasePlot.resetAutoRangeY,
+                          doc="""
+Whether or not the Y-axis automatically rescales to fit the data.
+If true, the values in minYRange and maxYRange are ignored.""")
 
-    minYRange = pyqtProperty(float, BasePlot.getMinYRange,
-                             BasePlot.setMinYRange, doc="""
-    Minimum Y-axis value visible on the plot.""")
+    minYRange = Property(float, BasePlot.getMinYRange,
+                         BasePlot.setMinYRange, doc="""
+Minimum Y-axis value visible on the plot.""")
 
-    maxYRange = pyqtProperty(float, BasePlot.getMaxYRange,
-                             BasePlot.setMaxYRange, doc="""
-    Maximum Y-axis value visible on the plot.""")
+    maxYRange = Property(float, BasePlot.getMaxYRange,
+                         BasePlot.setMaxYRange, doc="""
+Maximum Y-axis value visible on the plot.""")

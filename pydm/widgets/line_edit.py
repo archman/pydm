@@ -1,15 +1,18 @@
 import locale
 from functools import partial
-from ..PyQt.QtGui import QLineEdit, QMenu, QApplication, QAction
-from ..PyQt.QtCore import Qt, pyqtProperty, Q_ENUMS
-from .. import utilities
-from .base import PyDMWritableWidget
-from .display_format import DisplayFormat, parse_value_for_display
-
 import numpy as np
 
+import logging
+logger = logging.getLogger(__name__)
 
-class PyDMLineEdit(QLineEdit, PyDMWritableWidget, DisplayFormat):
+from qtpy.QtWidgets import QLineEdit, QMenu, QApplication
+from qtpy.QtCore import Property, Q_ENUMS
+from .. import utilities
+from .base import PyDMWritableWidget, TextFormatter
+from .display_format import DisplayFormat, parse_value_for_display
+
+
+class PyDMLineEdit(QLineEdit, TextFormatter, PyDMWritableWidget, DisplayFormat):
     Q_ENUMS(DisplayFormat)
     DisplayFormat = DisplayFormat
     """
@@ -34,7 +37,6 @@ class PyDMLineEdit(QLineEdit, PyDMWritableWidget, DisplayFormat):
         self._scale = 1
 
         self.returnPressed.connect(self.send_value)
-        self.setEnabled(False)
         self.unitMenu = QMenu('Convert Units', self)
         self.create_unit_options()
         self._display_format_type = self.DisplayFormat.Default
@@ -42,7 +44,7 @@ class PyDMLineEdit(QLineEdit, PyDMWritableWidget, DisplayFormat):
         if utilities.is_pydm_app():
             self._string_encoding = self.app.get_string_encoding()
 
-    @pyqtProperty(DisplayFormat)
+    @Property(DisplayFormat)
     def displayFormat(self):
         return self._display_format_type
 
@@ -79,7 +81,7 @@ class PyDMLineEdit(QLineEdit, PyDMWritableWidget, DisplayFormat):
         """
         send_value = str(self.text())
         # Clean text of unit string
-        if self._show_units and self._unit in send_value:
+        if self._show_units and self._unit and self._unit in send_value:
             send_value = send_value[:-len(self._unit)].strip()
         try:
             if self.channeltype not in [str, np.ndarray]:
@@ -115,7 +117,8 @@ class PyDMLineEdit(QLineEdit, PyDMWritableWidget, DisplayFormat):
                 # Lets just send what we have after all
                 self.send_value_signal[str].emit(send_value)
         except ValueError:
-            print("Error trying to set data: {} with type {} and format {} at widget {}.".format(self.text(), self.channeltype, self._display_format_type, self.objectName()))
+            logger.exception("Error trying to set data '{0}' with type '{1}' and format '{2}' at widget '{3}'."
+                         .format(self.text(), self.channeltype, self._display_format_type, self.objectName()))
 
         self.clearFocus()
         self.set_display()
@@ -125,12 +128,7 @@ class PyDMLineEdit(QLineEdit, PyDMWritableWidget, DisplayFormat):
         Change the PyDMLineEdit to read only if write access is denied
         """
         super(PyDMLineEdit, self).write_access_changed(new_write_access)
-        self.setEnabled(True)
         self.setReadOnly(not new_write_access)
-
-    def precision_changed(self, new_precision):
-        super(PyDMLineEdit, self).precision_changed(new_precision)
-        self.set_display()
 
     def unit_changed(self, new_unit):
         """
@@ -142,7 +140,6 @@ class PyDMLineEdit(QLineEdit, PyDMWritableWidget, DisplayFormat):
         """
         super(PyDMLineEdit, self).unit_changed(new_unit)
         self._scale = 1
-        self.set_display()
         self.create_unit_options()
 
     def create_unit_options(self):
@@ -182,8 +179,7 @@ class PyDMLineEdit(QLineEdit, PyDMWritableWidget, DisplayFormat):
             String name of desired units
         """
         if not self._unit:
-            print('Warning: Attempting to convert PyDMLineEdit unit, '\
-                           'but no initial units supplied')
+            logger.warning("Warning: Attempting to convert PyDMLineEdit unit, but no initial units supplied.")
             return None
 
         scale = utilities.convert(str(self._unit), unit)
@@ -194,13 +190,20 @@ class PyDMLineEdit(QLineEdit, PyDMWritableWidget, DisplayFormat):
             self.clearFocus()
             self.set_display()
         else:
-            print('Warning: Attempting to convert PyDMLineEdit unit, but {:} '\
-                           'can not be converted to {:}'.format(self._units, unit))
+            logging.warning("Warning: Attempting to convert PyDMLineEdit unit, but '{0}' can not be converted to '{1}'."
+                            .format(self._unit, unit))
 
-    def context_menu(self):
-        menu = super(PyDMLineEdit, self).context_menu()
-        if len(menu.findChildren(QAction)) > 0:
-            menu.addSeparator()
+    def widget_ctx_menu(self):
+        """
+        Fetch the Widget specific context menu which will be populated with additional tools by `assemble_tools_menu`.
+
+        Returns
+        -------
+        QMenu or None
+            If the return of this method is None a new QMenu will be created by `assemble_tools_menu`.
+        """
+        menu = self.createStandardContextMenu()
+        menu.addSeparator()
         menu.addMenu(self.unitMenu)
         return menu
 
@@ -230,12 +233,13 @@ class PyDMLineEdit(QLineEdit, PyDMWritableWidget, DisplayFormat):
                 try:
                     new_value *= self.channeltype(self._scale)
                 except TypeError:
-                    print("Cannot convert channel: {} with type: {}", self._channel, self.channeltype)
+                    logger.error("Cannot convert the value '{0}', for channel '{1}', to type '{2}'. ".format(
+                        self._scale, self._channel, self.channeltype))
 
         new_value = parse_value_for_display(value=new_value,  precision=self._prec,
-                                             display_format_type=self._display_format_type,
-                                             string_encoding=self._string_encoding,
-                                             widget=self)
+                                            display_format_type=self._display_format_type,
+                                            string_encoding=self._string_encoding,
+                                            widget=self)
 
         self._display = str(new_value)
 

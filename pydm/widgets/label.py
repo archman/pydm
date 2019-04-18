@@ -1,15 +1,20 @@
-from .base import PyDMWidget
-from ..PyQt.QtGui import QLabel, QApplication
-from ..PyQt.QtCore import Qt, pyqtProperty, Q_ENUMS
+from .base import PyDMWidget, TextFormatter
+from qtpy.QtWidgets import QLabel, QApplication
+from qtpy.QtCore import Qt, Property, Q_ENUMS
 from .display_format import DisplayFormat, parse_value_for_display
 from pydm.utilities import is_pydm_app
 
 
-class PyDMLabel(QLabel, PyDMWidget, DisplayFormat):
+class PyDMLabel(QLabel, TextFormatter, PyDMWidget, DisplayFormat):
     Q_ENUMS(DisplayFormat)
     DisplayFormat = DisplayFormat
     """
-    A QLabel with support for Channels and more from PyDM
+    A QLabel with support for setting the text via a PyDM Channel, or
+    through the PyDM Rules system.
+    
+    Note: If a PyDMLabel is configured to use a Channel, and also with a rule
+    which changes the 'Text' property, the behavior is undefined.  Use either
+    the Channel *or* a text rule, but not both.
 
     Parameters
     ----------
@@ -22,6 +27,10 @@ class PyDMLabel(QLabel, PyDMWidget, DisplayFormat):
     def __init__(self, parent=None, init_channel=None):
         QLabel.__init__(self, parent)
         PyDMWidget.__init__(self, init_channel=init_channel)
+        if 'Text' not in PyDMLabel.RULE_PROPERTIES:
+            PyDMLabel.RULE_PROPERTIES = PyDMWidget.RULE_PROPERTIES.copy()
+            PyDMLabel.RULE_PROPERTIES.update(
+                {'Text': ['value_changed', str]})
         self.app = QApplication.instance()
         self.setTextFormat(Qt.PlainText)
         self.setTextInteractionFlags(Qt.NoTextInteraction)
@@ -31,7 +40,7 @@ class PyDMLabel(QLabel, PyDMWidget, DisplayFormat):
         if is_pydm_app():
             self._string_encoding = self.app.get_string_encoding()
 
-    @pyqtProperty(DisplayFormat)
+    @Property(DisplayFormat)
     def displayFormat(self):
         return self._display_format_type
 
@@ -54,9 +63,9 @@ class PyDMLabel(QLabel, PyDMWidget, DisplayFormat):
         """
         super(PyDMLabel, self).value_changed(new_value)
         new_value = parse_value_for_display(value=new_value, precision=self._prec,
-                                             display_format_type=self._display_format_type,
-                                             string_encoding=self._string_encoding,
-                                             widget=self)
+                                            display_format_type=self._display_format_type,
+                                            string_encoding=self._string_encoding,
+                                            widget=self)
         # If the value is a string, just display it as-is, no formatting
         # needed.
         if isinstance(new_value, str):

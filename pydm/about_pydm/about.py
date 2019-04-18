@@ -1,6 +1,6 @@
-from ..PyQt import uic
-from ..PyQt.QtGui import QWidget, QApplication, QTableWidgetItem
-from ..PyQt.QtCore import Qt, PYQT_VERSION_STR, QT_VERSION_STR
+from qtpy import uic
+from qtpy.QtWidgets import QWidget, QApplication, QTableWidgetItem
+from qtpy.QtCore import Qt, PYQT_VERSION_STR, qVersion
 from .about_ui import Ui_Form
 from numpy import __version__ as numpyver
 from pyqtgraph import __version__ as pyqtgraphver
@@ -9,10 +9,10 @@ import sys
 from os import path
 import inspect
 
+
 class AboutWindow(QWidget):
     def __init__(self, parent=None):
         super(AboutWindow, self).__init__(parent, Qt.Window)
-        self.app = QApplication.instance()
         self.ui = Ui_Form()
         self.ui.setupUi(self)
         self.ui.pydmVersionLabel.setText(str(self.ui.pydmVersionLabel.text()).format(version=pydm.__version__))
@@ -21,19 +21,19 @@ class AboutWindow(QWidget):
                                                                                            numpyver=numpyver,
                                                                                            pyqtgraphver=pyqtgraphver,
                                                                                            pyqtver=PYQT_VERSION_STR,
-                                                                                           qtver=QT_VERSION_STR))
+                                                                                           qtver=qVersion()))
         self.populate_external_tools_list()
         self.populate_plugin_list()
         self.populate_contributor_list()
-                                                                                           
+
     def populate_external_tools_list(self):
         col_labels = ["Name", "Group", "Author", "File"]
         self.ui.externalToolsTableWidget.setColumnCount(len(col_labels))
         self.ui.externalToolsTableWidget.setHorizontalHeaderLabels(col_labels)
         self.ui.externalToolsTableWidget.horizontalHeader().setStretchLastSection(True)
         self.ui.externalToolsTableWidget.verticalHeader().setVisible(False)
-        self.add_tools_to_list(self.app.tools)
-    
+        self.add_tools_to_list(pydm.tools.ext_tools)
+
     def add_tools_to_list(self, tools):
         for (name, tool) in tools.items():
             if isinstance(tool, dict):
@@ -50,21 +50,21 @@ class AboutWindow(QWidget):
                 self.ui.externalToolsTableWidget.setItem(new_row, 1, group_item)
                 self.ui.externalToolsTableWidget.setItem(new_row, 2, author_item)
                 self.ui.externalToolsTableWidget.setItem(new_row, 3, file_item)
-    
+
     def populate_plugin_list(self):
         col_labels = ["Protocol", "File"]
         self.ui.dataPluginsTableWidget.setColumnCount(len(col_labels))
         self.ui.dataPluginsTableWidget.setHorizontalHeaderLabels(col_labels)
         self.ui.dataPluginsTableWidget.horizontalHeader().setStretchLastSection(True)
         self.ui.dataPluginsTableWidget.verticalHeader().setVisible(False)
-        for (protocol, plugin) in self.app.plugins.items():
+        for (protocol, plugin) in pydm.data_plugins.plugin_modules.items():
             protocol_item = QTableWidgetItem(protocol)
             file_item = QTableWidgetItem(inspect.getfile(plugin.__class__))
             new_row = self.ui.dataPluginsTableWidget.rowCount()
             self.ui.dataPluginsTableWidget.insertRow(new_row)
             self.ui.dataPluginsTableWidget.setItem(new_row, 0, protocol_item)
             self.ui.dataPluginsTableWidget.setItem(new_row, 1, file_item)
-    
+
     def populate_contributor_list(self):
         contrib_file = path.join(path.dirname(path.realpath(__file__)), "contributors.txt")
         with open(contrib_file) as f:

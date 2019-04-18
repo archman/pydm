@@ -1,8 +1,11 @@
 import hashlib
 
-from ..PyQt.QtGui import QPushButton, QMessageBox, QInputDialog, QLineEdit
-from ..PyQt.QtCore import pyqtSlot, pyqtProperty
-from .base import PyDMWritableWidget, compose_stylesheet
+from qtpy.QtWidgets import QPushButton, QMessageBox, QInputDialog, QLineEdit
+from qtpy.QtCore import Slot, Property
+from .base import PyDMWritableWidget
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 class PyDMPushButton(QPushButton, PyDMWritableWidget):
@@ -43,7 +46,7 @@ class PyDMPushButton(QPushButton, PyDMWritableWidget):
 
     """
 
-    DEFAULT_CONFIRM_MESSAGE = "Are you sure you want to proceed ?"
+    DEFAULT_CONFIRM_MESSAGE = "Are you sure you want to proceed?"
 
     def __init__(self, parent=None, label=None, icon=None,
                  pressValue=None, relative=False,
@@ -57,7 +60,7 @@ class PyDMPushButton(QPushButton, PyDMWritableWidget):
         PyDMWritableWidget.__init__(self, init_channel=init_channel)
         self._pressValue = pressValue
         self._relative = relative
-
+        self._alarm_sensitive_border = False
         self._show_confirm_dialog = False
         self._confirm_message = PyDMPushButton.DEFAULT_CONFIRM_MESSAGE
         self._password_protected = False
@@ -65,10 +68,10 @@ class PyDMPushButton(QPushButton, PyDMWritableWidget):
         self._protected_password = ""
         self.clicked.connect(self.sendValue)
 
-    @pyqtProperty(bool)
+    @Property(bool)
     def passwordProtected(self):
         """
-        Wether or not this button is password protected.
+        Whether or not this button is password protected.
 
         Returns
         -------
@@ -79,7 +82,7 @@ class PyDMPushButton(QPushButton, PyDMWritableWidget):
     @passwordProtected.setter
     def passwordProtected(self, value):
         """
-        Wether or not this button is password protected.
+        Whether or not this button is password protected.
 
         Parameters
         ----------
@@ -88,7 +91,7 @@ class PyDMPushButton(QPushButton, PyDMWritableWidget):
         if self._password_protected != value:
             self._password_protected = value
 
-    @pyqtProperty(str)
+    @Property(str)
     def password(self):
         """
         Password to be encrypted using SHA256.
@@ -116,9 +119,11 @@ class PyDMPushButton(QPushButton, PyDMWritableWidget):
         if value is not None and value != "":
             sha = hashlib.sha256()
             sha.update(value.encode())
-            self._protected_password = sha.hexdigest()
+            # Use the setter as it also checks whether the existing password is the same with the
+            # new one, and only updates if the new password is different
+            self.protectedPassword = sha.hexdigest()
 
-    @pyqtProperty(str)
+    @Property(str)
     def protectedPassword(self):
         """
         The encrypted password.
@@ -134,7 +139,7 @@ class PyDMPushButton(QPushButton, PyDMWritableWidget):
         if self._protected_password != value:
             self._protected_password = value
 
-    @pyqtProperty(bool)
+    @Property(bool)
     def showConfirmDialog(self):
         """
         Wether or not to display a confirmation dialog.
@@ -157,7 +162,7 @@ class PyDMPushButton(QPushButton, PyDMWritableWidget):
         if self._show_confirm_dialog != value:
             self._show_confirm_dialog = value
 
-    @pyqtProperty(str)
+    @Property(str)
     def confirmMessage(self):
         """
         Message to be displayed at the Confirmation dialog.
@@ -180,7 +185,7 @@ class PyDMPushButton(QPushButton, PyDMWritableWidget):
         if self._confirm_message != value:
             self._confirm_message = value
 
-    @pyqtProperty(str)
+    @Property(str)
     def pressValue(self):
         """
         This property holds the value to send back through the channel.
@@ -211,7 +216,7 @@ class PyDMPushButton(QPushButton, PyDMWritableWidget):
         if str(value) != self._pressValue:
             self._pressValue = str(value)
 
-    @pyqtProperty(bool)
+    @Property(bool)
     def relativeChange(self):
         """
         The mode of operation of the PyDMPushButton.
@@ -291,9 +296,8 @@ class PyDMPushButton(QPushButton, PyDMWritableWidget):
         if not self._password_protected:
             return True
 
-        pwd, ok = QInputDialog.getText(None, "Authentication",
-                                       "Please enter your password:",
-                                       QLineEdit.Password, "")
+        pwd, ok = QInputDialog().getText(None, "Authentication", "Please enter your password:",
+                                         QLineEdit.Password, "")
         pwd = str(pwd)
         if not ok or pwd == "":
             return False
@@ -313,52 +317,48 @@ class PyDMPushButton(QPushButton, PyDMWritableWidget):
             return False
         return True
 
-    def alarm_severity_changed(self, new_alarm_severity):
-        """
-        Callback invoked when the Channel alarm severity is changed.
-
-        This callback is not processed if the widget has no channel associated
-        with it. It handles the composition of the stylesheet to be applied and
-        the call to update to redraw the widget with the needed changes for the
-        new state.
-
-        Parameters
-        ----------
-        new_alarm_severity : int
-            New severity: 0 = NO_ALARM, 1 = MINOR, 2 = MAJOR and 3 = INVALID
-        """
-        if self._alarm_sensitive_content:
-            self._style = dict(self.alarm_style_sheet_map[self.ALARM_CONTENT][
-                                                        new_alarm_severity])
-            style = compose_stylesheet(style=self._style, obj=self)
-            self.setStyleSheet(style)
-            self.update()
-
-    @pyqtSlot()
+    @Slot()
     def sendValue(self):
         """
         Send a new value to the channel.
 
         This function interprets the settings of the PyDMPushButton and sends
         the appropriate value out through the :attr:`.send_value_signal`.
+
+        Returns
+        -------
+        None if any of the following condition is False:
+            1. There's no new value (pressValue) for the widget
+            2. There's no initial or current value for the widget
+            3. The confirmation dialog returns No as the user's answer to the dialog
+            4. The password validation dialog returns a validation error
+        Otherwise, return the value sent to the channel:
+            1. The value sent to the channel is the same as the pressValue if the existing
+               channel type is a str, or the relative flag is False
+            2. The value sent to the channel is the sum of the existing value and the pressValue
+               if the relative flag is True, and the channel type is not a str
         """
+        send_value = None
         if self._pressValue is None or self.value is None:
             return None
+
         if not self.confirm_dialog():
             return None
 
         if not self.validate_password():
             return None
+
         if not self._relative or self.channeltype == str:
-            self.send_value_signal[self.channeltype].emit(
-                                        self.channeltype(self._pressValue))
+            send_value = self._pressValue
+            self.send_value_signal[self.channeltype].emit(self.channeltype(send_value))
         else:
             send_value = self.value + self.channeltype(self._pressValue)
             self.send_value_signal[self.channeltype].emit(send_value)
+        return send_value
 
-    @pyqtSlot(int)
-    @pyqtSlot(float)
-    @pyqtSlot(str)
+    @Slot(int)
+    @Slot(float)
+    @Slot(str)
     def updatePressValue(self, value):
         """
         Update the pressValue of a function by passing a signal to the
@@ -374,6 +374,5 @@ class PyDMPushButton(QPushButton, PyDMWritableWidget):
         """
         try:
             self.pressValue = self.channeltype(value)
-        except ValueError:
-            print('{:} is not a valid pressValue '
-                  'for {:}'.format(value, self.channel))
+        except(ValueError, TypeError):
+            logger.error("'{0}' is not a valid pressValue for '{1}'.".format(value, self.channel))

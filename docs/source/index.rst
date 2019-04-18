@@ -14,24 +14,40 @@ as well as a straightforward python framework to build complex applications.
 
 .. toctree::
    :maxdepth: 1
+   :caption: Configuration
+
+   configuration.rst
+
+
+.. toctree::
+   :maxdepth: 1
    :caption: Tutorials
 
-   tutorials/first_display.rst
-   tutorials/scripted_displays.rst
-   tutorials/macros.rst
+   Explore Tutorials <https://slaclab.github.io/pydm-tutorial>
 
 .. toctree::
    :maxdepth: 2
    :caption: User & API Documentation
 
    widgets/index.rst
+   widgets/widget_rules/index.rst
+   add_data_plugins.rst
    application.rst
    channel.rst
-   
+   utilities/index.rst
+
 .. toctree::
    :maxdepth: 1
    :caption: Developers Corner
 
    development/development.rst
+   widgets/widget_rules/customizing.rst
    development/resources.rst
 
+.. toctree::
+   :maxdepth: 1
+   :caption: Links
+   :hidden:
+
+   PyDM GitHub <https://github.com/slaclab/pydm>
+   SLAC-wide GitHub <https://github.com/slaclab>

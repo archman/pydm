@@ -1,15 +1,20 @@
 import os
-from os import path, environ
-from functools import partial
-from .PyQt.QtGui import QApplication, QMainWindow, QFileDialog, QWidget, QAction
-from .PyQt.QtCore import Qt, QTimer, pyqtSlot, QSize, QLibraryInfo
-from .utilities import IconFont
+from os import path
+from qtpy.QtWidgets import QApplication, QMainWindow, QFileDialog, QWidget, QAction
+from qtpy.QtCore import Qt, QTimer, Slot, QSize, QLibraryInfo
+from .utilities import IconFont, find_display_in_path
 from .pydm_ui import Ui_MainWindow
 from .display_module import Display
 from .connection_inspector import ConnectionInspector
 from .about_pydm import AboutWindow
+from .widgets import rules
+from . import data_plugins
+from . import tools
 import subprocess
 import platform
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class PyDMMainWindow(QMainWindow):
@@ -17,11 +22,13 @@ class PyDMMainWindow(QMainWindow):
     def __init__(self, parent=None, hide_nav_bar=False, hide_menu_bar=False, hide_status_bar=False):
         super(PyDMMainWindow, self).__init__(parent)
         self.app = QApplication.instance()
+        self.font_factor = 1
         self.iconFont = IconFont()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
         self._display_widget = None
         self._showing_file_path_in_title_bar = False
+        self.default_font_size = QApplication.instance().font().pointSizeF()
         self.ui.navbar.setIconSize(QSize(24, 24))
         self.ui.navbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         # No search bar for now, since there isn't really any capability to search yet.
@@ -44,6 +51,8 @@ class PyDMMainWindow(QMainWindow):
         self.ui.actionReload_Display.triggered.connect(self.reload_display)
         self.ui.actionIncrease_Font_Size.triggered.connect(self.increase_font_size)
         self.ui.actionDecrease_Font_Size.triggered.connect(self.decrease_font_size)
+        self.ui.actionDefault_Font_Size.triggered.connect(self.reset_font_size)
+        self.ui.actionEnter_Fullscreen.triggered.connect(self.enter_fullscreen)
         self.ui.actionShow_File_Path_in_Title_Bar.triggered.connect(self.toggle_file_path_in_title_bar)
         self.ui.actionShow_Navigation_Bar.triggered.connect(self.toggle_nav_bar)
         self.ui.actionShow_Menu_Bar.triggered.connect(self.toggle_menu_bar)
@@ -64,19 +73,22 @@ class PyDMMainWindow(QMainWindow):
             self.ui.actionShow_Menu_Bar.activate(QAction.Trigger)
         if hide_status_bar:
             self.toggle_status_bar(False)
+        #Try to find the designer binary.
+        self.ui.actionEdit_in_Designer.setEnabled(False)
         self.designer_path = None
-        designer_bin = QLibraryInfo.location(QLibraryInfo.BinariesPath)
+        possible_designer_bin_paths = (QLibraryInfo.location(QLibraryInfo.BinariesPath), QLibraryInfo.location(QLibraryInfo.LibraryExecutablesPath))
+        for bin_path in possible_designer_bin_paths:
+            if platform.system() == 'Darwin':
+                designer_path = os.path.join(bin_path, 'Designer.app/Contents/MacOS/Designer')
+            elif platform.system() == 'Linux':
+                designer_path = os.path.join(bin_path, 'designer')
+            else:
+                designer_path = os.path.join(bin_path, 'designer.exe')
+            if os.path.isfile(designer_path):
+                self.designer_path = designer_path
+                break
 
-        if platform.system() == 'Darwin':
-            self.designer_path = os.path.join(designer_bin, 'Designer.app/Contents/MacOS/Designer')
-        elif platform.system() == 'Linux':
-            self.designer_path = os.path.join(designer_bin, 'designer')
-        else:
-            self.designer_path = os.path.join(designer_bin, 'designer.exe')
-
-        # Ensure that the file exists
-        if not os.path.isfile(self.designer_path):
-            self.designer_path = None
+        self.update_tools_menu()
 
     def set_display_widget(self, new_widget):
         if new_widget == self._display_widget:
@@ -96,12 +108,15 @@ class PyDMMainWindow(QMainWindow):
     def clear_display_widget(self):
         if self._display_widget is not None:
             self.setCentralWidget(QWidget())
-            self.app.close_widget_connections(self._display_widget)
+            rules.unregister_widget_rules(self._display_widget)
             self._display_widget.deleteLater()
             self._display_widget = None
+            self.ui.actionEdit_in_Designer.setEnabled(False)
 
     def join_to_current_file_path(self, ui_file):
         ui_file = str(ui_file)
+        # Expand user (~ or ~user) and environment variables.
+        ui_file = os.path.expanduser(os.path.expandvars(ui_file))
         if path.isabs(ui_file) or len(self.back_stack) == 0:
             return str(ui_file)
         else:
@@ -109,7 +124,17 @@ class PyDMMainWindow(QMainWindow):
 
     def open_file(self, ui_file, macros=None, command_line_args=None):
         filename = self.join_to_current_file_path(ui_file)
-        self.open_abs_file(filename, macros, command_line_args)
+        try:
+            if not os.path.exists(filename):
+                new_fname = find_display_in_path(ui_file)
+                if new_fname is None or new_fname == "":
+                    raise IOError("File {} not found".format(filename))
+                filename = new_fname
+            self.open_abs_file(filename, macros, command_line_args)
+        except (IOError, OSError, ValueError, ImportError) as e:
+            error_msg = "Cannot open file: '{0}'. Reason: '{1}'.".format(filename, e)
+            logger.error(error_msg)
+            self.statusBar().showMessage(error_msg, 5000)
 
     def open_abs_file(self, filename, macros=None, command_line_args=None):
         if command_line_args is None:
@@ -133,10 +158,22 @@ class PyDMMainWindow(QMainWindow):
             editors.append("Text Editor")
         edit_in_text += ' and '.join(editors)
         self.ui.actionEdit_in_Designer.setText(edit_in_text)
+        if self.designer_path:
+            self.ui.actionEdit_in_Designer.setEnabled(True)
 
     def new_window(self, ui_file, macros=None, command_line_args=None):
         filename = self.join_to_current_file_path(ui_file)
-        self.new_abs_window(filename, macros, command_line_args)
+        try:
+            if not os.path.exists(filename):
+                new_fname = find_display_in_path(ui_file)
+                if new_fname is None or new_fname == "":
+                    raise IOError("File {} not found".format(filename))
+                filename = new_fname
+            self.new_abs_window(filename, macros, command_line_args)
+        except (IOError, OSError, ValueError, ImportError) as e:
+            error_msg = "Cannot open file: '{0}'. Reason: '{1}'.".format(filename, e)
+            logger.error(error_msg)
+            self.statusBar().showMessage(error_msg, 5000)
 
     def new_abs_window(self, filename, macros=None, command_line_args=None):
         merged_macros = self.merge_with_current_macros(macros)
@@ -187,6 +224,9 @@ class PyDMMainWindow(QMainWindow):
                 self.open_abs_file(filename=stack_item[0], macros=stack_item[1], command_line_args=stack_item[2])
 
     def home(self):
+        if self.home_file is None:
+            return
+
         if QApplication.keyboardModifiers() == Qt.ShiftModifier:
             self.new_abs_window(filename=self.home_file[0], macros=self.home_file[1], command_line_args=self.home_file[2])
         else:
@@ -227,7 +267,7 @@ class PyDMMainWindow(QMainWindow):
         else:
             title = self._display_widget.windowTitle()
         title += " - PyDM"
-        if self.app.is_read_only():
+        if data_plugins.is_read_only():
             title += " [Read Only Mode]"
         self.setWindowTitle(title)
 
@@ -240,15 +280,15 @@ class PyDMMainWindow(QMainWindow):
         self._showing_file_path_in_title_bar = checked
         self.update_window_title()
 
-    @pyqtSlot(bool)
+    @Slot(bool)
     def toggle_file_path_in_title_bar(self, checked):
         self.showing_file_path_in_title_bar = checked
 
-    @pyqtSlot(bool)
+    @Slot(bool)
     def toggle_nav_bar(self, checked):
         self.ui.navbar.setHidden(not checked)
 
-    @pyqtSlot(bool)
+    @Slot(bool)
     def toggle_menu_bar(self, checked=None):
         if checked is None:
             checked = not self.ui.menubar.isVisible()
@@ -264,12 +304,18 @@ class PyDMMainWindow(QMainWindow):
             self._saved_menu_height = self.ui.menubar.height()
             self.ui.menubar.setFixedHeight(0)
 
-    @pyqtSlot(bool)
+    @Slot(bool)
     def toggle_status_bar(self, checked):
         self.ui.statusbar.setHidden(not checked)
 
     def get_files_in_display(self):
-        _, extension = path.splitext(self.current_file())
+        try:
+            curr_file = self.current_file()
+        except IndexError:
+            logger.error("The display manager does not have a display loaded.")
+            return None, None
+
+        _, extension = path.splitext(curr_file)
         if extension == '.ui':
             return self.current_file(), None
         else:
@@ -278,7 +324,7 @@ class PyDMMainWindow(QMainWindow):
                 ui_file = central_widget.ui_filepath()
             return ui_file, self.current_file()
 
-    @pyqtSlot(bool)
+    @Slot(bool)
     def edit_in_designer(self, checked):
 
         def open_editor_ui(fname):
@@ -301,10 +347,16 @@ class PyDMMainWindow(QMainWindow):
         if py_file is not None and py_file != "":
             open_editor_generic(fname=py_file)
 
-    @pyqtSlot(bool)
+    @Slot(bool)
     def open_file_action(self, checked):
         modifiers = QApplication.keyboardModifiers()
-        filename = QFileDialog.getOpenFileName(self, 'Open File...', os.path.dirname(self.current_file()), 'PyDM Display Files (*.ui *.py)')
+        try:
+            curr_file = self.current_file()
+            folder = os.path.dirname(curr_file)
+        except IndexError:
+            folder = os.getcwd()
+
+        filename = QFileDialog.getOpenFileName(self, 'Open File...', folder, 'PyDM Display Files (*.ui *.py)')
         filename = filename[0] if isinstance(filename, (list, tuple)) else filename
 
         if filename:
@@ -318,44 +370,91 @@ class PyDMMainWindow(QMainWindow):
                 self.handle_open_file_error(filename, e)
 
     def load_tool(self, checked):
-        filename = QFileDialog.getOpenFileName(self, 'Load tool...', os.path.dirname(self.current_file()), 'PyDM External Tool Files (*_tool.py)')
+        try:
+            curr_dir = os.path.dirname(self.current_file())
+        except IndexError:
+            logger.error("The display manager does not have a display loaded. Suggesting current work directory.")
+            curr_dir = os.getcwd()
+        filename = QFileDialog.getOpenFileName(self, 'Load tool...', curr_dir, 'PyDM External Tool Files (*_tool.py)')
         filename = filename[0] if isinstance(filename, (list, tuple)) else filename
 
         if filename:
             filename = str(filename)
-            self.app.install_external_tool(filename)
+            tools.install_external_tool(filename)
+            self.update_tools_menu()
 
-    @pyqtSlot(bool)
+    def update_tools_menu(self):
+        """
+        Update the Main Window Tools menu.
+        """
+        kwargs = {'channels': None, 'sender': self}
+        tools.assemble_tools_menu(self.ui.menuTools,
+                                  clear_menu=True,
+                                  **kwargs)
+
+        self.ui.menuTools.addSeparator()
+        self.ui.menuTools.addAction(self.ui.actionLoadTool)
+
+    @Slot(bool)
     def reload_display(self, checked):
+        try:
+            curr_file = self.current_file()
+        except IndexError:
+            logger.error("The display manager does not have a display loaded.")
+            return
         self.statusBar().showMessage("Reloading '{0}'...".format(self.current_file()), 5000)
         self.go_abs(self.current_file())
 
-    @pyqtSlot(bool)
+    @Slot(bool)
     def increase_font_size(self, checked):
-        current_font = QApplication.instance().font()
-        current_font.setPointSizeF(current_font.pointSizeF() * 1.1)
-        QApplication.instance().setFont(current_font)
-        QTimer.singleShot(0, self.resizeForNewDisplayWidget)
+        old_factor = self.font_factor
+        self.font_factor += 0.1
+        self.set_font_size(old_factor, self.font_factor)
 
-    @pyqtSlot(bool)
+    @Slot(bool)
     def decrease_font_size(self, checked):
-        current_font = QApplication.instance().font()
-        current_font.setPointSizeF(current_font.pointSizeF() / 1.1)
+        old_factor = self.font_factor
+        self.font_factor -= 0.1
+        self.set_font_size(old_factor, self.font_factor)
+
+    @Slot(bool)
+    def reset_font_size(self, checked):
+        old_factor = self.font_factor
+        self.font_factor = 1
+        self.set_font_size(old_factor, self.font_factor)
+
+    def set_font_size(self, old, new):
+        current_font = self.app.font()
+        current_font.setPointSizeF(current_font.pointSizeF()/old*new)
         QApplication.instance().setFont(current_font)
+
+        for w in self.app.allWidgets():
+            w_c_f = w.font()
+            w_c_f.setPointSizeF(w_c_f.pointSizeF()/old*new)
+            w.setFont(w_c_f)
+
         QTimer.singleShot(0, self.resizeForNewDisplayWidget)
 
-    @pyqtSlot(bool)
+    @Slot(bool)
+    def enter_fullscreen(self, checked=False):
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+
+    @Slot(bool)
     def show_connections(self, checked):
-        c = ConnectionInspector(self.app.list_all_connections(), self)
+        c = ConnectionInspector(self)
         c.show()
-    
-    @pyqtSlot(bool)
+
+    @Slot(bool)
     def show_about_window(self, checked):
         a = AboutWindow(self)
         a.show()
 
     def resizeForNewDisplayWidget(self):
-        self.resize(self._new_widget_size)
+        if not self.isFullScreen():
+            self.resize(self._new_widget_size)
 
     def closeEvent(self, event):
         self.clear_display_widget()

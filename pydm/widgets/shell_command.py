@@ -1,8 +1,14 @@
-from ..PyQt.QtGui import QPushButton, QCursor, QIcon
-from ..PyQt.QtCore import pyqtSlot, pyqtProperty, QSize
-import shlex, subprocess
+from qtpy.QtWidgets import QPushButton
+from qtpy.QtGui import QCursor, QIcon
+from qtpy.QtCore import Slot, Property, QSize
+import shlex
+import subprocess
 from .base import PyDMPrimitiveWidget
 from ..utilities import IconFont
+
+import sys
+import logging
+logger = logging.getLogger(__name__)
 
 
 class PyDMShellCommand(QPushButton, PyDMPrimitiveWidget):
@@ -24,7 +30,7 @@ class PyDMShellCommand(QPushButton, PyDMPrimitiveWidget):
         self.process = None
         self._show_icon = True
 
-    @pyqtProperty(bool)
+    @Property(bool)
     def showIcon(self):
         """
         Whether or not we should show the selected Icon.
@@ -53,7 +59,7 @@ class PyDMShellCommand(QPushButton, PyDMPrimitiveWidget):
                 self._icon = self.icon()
                 self.setIcon(QIcon())
 
-    @pyqtProperty(bool)
+    @Property(bool)
     def allowMultipleExecutions(self):
         """
         Whether or not we should allow the same command
@@ -78,7 +84,7 @@ class PyDMShellCommand(QPushButton, PyDMPrimitiveWidget):
         if self._allow_multiple != value:
             self._allow_multiple = value
 
-    @pyqtProperty(str)
+    @Property(str)
     def command(self):
         """
         The Shell Command to be executed
@@ -116,7 +122,7 @@ class PyDMShellCommand(QPushButton, PyDMPrimitiveWidget):
         self.execute_command()
         super(PyDMShellCommand, self).mouseReleaseEvent(mouse_event)
 
-    @pyqtSlot()
+    @Slot()
     def execute_command(self):
         """
         Execute the shell command given by ```command```.
@@ -124,13 +130,14 @@ class PyDMShellCommand(QPushButton, PyDMPrimitiveWidget):
         """
 
         if self._command is None or self._command == "":
+            logger.info("The command is not set, so no command was executed.")
             return
 
         if (self.process is None or self.process.poll() is not None) or self._allow_multiple:
-            args = shlex.split(self._command)
+            args = shlex.split(self._command, posix='win' not in sys.platform)
             try:
-                self.process = subprocess.Popen(args)
+                self.process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             except Exception as exc:
-                print("Error in command: ", exc)
+                logger.error("Error in command: {0}".format(exc))
         else:
-            print("Command already active.")
+            logging.error("Command already active.")
